@@ -33,7 +33,8 @@ Four quadrants from direction: true-positive / false / counter-asymmetry / recog
 | Locked protocol (pre-registration) | ✅ `protocol/` v3, published on Zenodo |
 | Engine core (the math) | ✅ `engine/taca_engine.py` |
 | Feasibility pipeline | ✅ `feasibility/` — runs end-to-end on synthetic data |
-| Compliant data adapters | ⛔ not built — see `data/DATA_SPEC.md` |
+| Q_t adapter (real data) | 🟡 `data/adapters/qt_options.py` — real option chain → CDF; NON-COMPLIANT source |
+| P_t adapter (compliant) | ⛔ stub — needs survivorship-free PIT data (`data/DATA_SPEC.md`) |
 | Scored cases | ⛔ none — Amazon 2004 is feasibility-only |
 
 ## Layout
