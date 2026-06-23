@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TACA Research Lab</title>
+<style>
+  :root{
+    --bg:#0c0f14; --panel:#141923; --panel2:#1b2230; --line:#26303f;
+    --text:#e7edf5; --muted:#8a97a8; --accent:#3a8df0; --q:#e0a13c; --p:#3acc9a;
+    --warn:#c97a2c;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font:15px/1.6 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:980px;margin:0 auto;padding:40px 24px 64px}
+  header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:8px}
+  h1{font-size:26px;font-weight:600;letter-spacing:-.4px}
+  .tag{color:var(--muted);font-size:14px;margin-top:4px}
+  .badge{font-size:12px;padding:5px 11px;border-radius:7px;background:rgba(201,122,44,.14);color:var(--warn);border:1px solid rgba(201,122,44,.3);white-space:nowrap}
+  .formula{margin:22px 0 26px;padding:14px 18px;background:var(--panel);border:1px solid var(--line);border-radius:10px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:16px;color:var(--text)}
+  .formula b{color:var(--accent)}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:26px}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .stat .k{font-size:12px;color:var(--muted);margin-bottom:6px}
+  .stat .v{font-size:24px;font-weight:600}
+  .stat .s{font-size:12px;color:var(--muted);margin-top:2px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px 22px}
+  .card h2{font-size:16px;font-weight:600;margin-bottom:2px}
+  .card .sub{font-size:13px;color:var(--muted);margin-bottom:16px}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;margin-bottom:10px;font-size:13px;color:var(--muted)}
+  .legend span{display:inline-flex;align-items:center;gap:7px}
+  .sw{width:11px;height:11px;border-radius:3px;display:inline-block}
+  .chartbox{position:relative;height:340px}
+  footer{margin-top:30px;color:var(--muted);font-size:12.5px;line-height:1.7}
+  a{color:var(--accent);text-decoration:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>TACA Research Lab</h1>
+      <div class="tag">Structural change detection — not outcome detection.</div>
+    </div>
+    <div class="badge">practice data · §6.4 non-compliant</div>
+  </header>
+
+  <div class="formula">CRF<sub>t</sub> = JSD( <b>Q<sub>t</sub></b> &#8741; <b>P<sub>t</sub></b> )&nbsp;&nbsp;— divergence between what the market prices and what the evidence implies</div>
+
+  <div class="stats">
+    <div class="stat"><div class="k">Object</div><div class="v">CRM</div><div class="s">live option chain</div></div>
+    <div class="stat"><div class="k">CRF<sub>t</sub></div><div class="v" style="color:var(--accent)">0.089</div><div class="s">range 0–1</div></div>
+    <div class="stat"><div class="k">Horizon</div><div class="v">24m</div><div class="s">forward return</div></div>
+    <div class="stat"><div class="k">Quadrant</div><div class="v" style="font-size:18px">Recognized</div><div class="s">P ≈ Q region</div></div>
+  </div>
+
+  <div class="card">
+    <h2>Q<sub>t</sub> vs P<sub>t</sub> — forward 24-month return distribution</h2>
+    <div class="sub">Asymmetric bins (wider on the right tail, where the theory lives). The slanted line is the evidence CDF.</div>
+    <div class="legend">
+      <span><span class="sw" style="background:#e0a13c"></span>Q<sub>t</sub> — market-implied (option RND)</span>
+      <span><span class="sw" style="background:#3acc9a"></span>P<sub>t</sub> — evidence (reference class)</span>
+      <span><span class="sw" style="background:#3a8df0"></span>P<sub>t</sub> cumulative (CDF)</span>
+    </div>
+    <div class="chartbox"><canvas id="chart" role="img" aria-label="Grouped bar chart comparing market-implied Q_t and evidence P_t forward-24-month return distributions across ten asymmetric return bins, with a cumulative evidence CDF line."></canvas></div>
+  </div>
+
+  <footer>
+    Q<sub>t</sub> from a live CRM option chain (IV-lognormal RND); P<sub>t</sub> from real historical forward-24m returns of a diversified universe.
+    <b style="color:var(--warn)">Practice / non-compliant:</b> survivorship-biased class, single-vol Q (no skew), not point-in-time — demonstrates the machinery, not a scored case.
+    Protocol: <a href="https://doi.org/10.5281/zenodo.20800461">Protocol Lock v1 (Zenodo)</a>.
+  </footer>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script>
+  const labels = ["<-50%","-50..-25","-25..-10","-10..0","0..10","10..25","25..50","50..100","100..200",">200%"];
+  const Q = [0.171,0.219,0.119,0.069,0.061,0.076,0.093,0.103,0.067,0.022];
+  const P = [0.075,0.048,0.092,0.066,0.075,0.145,0.180,0.171,0.101,0.048];
+  let c=0; const Pcdf = P.map(v => (c+=v));
+  new Chart(document.getElementById('chart'), {
+    data:{
+      labels,
+      datasets:[
+        {type:'bar',label:'Q_t',data:Q,backgroundColor:'#e0a13c',borderRadius:3,order:2},
+        {type:'bar',label:'P_t',data:P,backgroundColor:'#3acc9a',borderRadius:3,order:2},
+        {type:'line',label:'P_t CDF',data:Pcdf,yAxisID:'y2',borderColor:'#3a8df0',
+         backgroundColor:'#3a8df0',borderWidth:2,pointRadius:2,tension:.25,order:1}
+      ]
+    },
+    options:{
+      responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false},tooltip:{callbacks:{label:(x)=>x.dataset.label+': '+(x.parsed.y).toFixed(3)}}},
+      scales:{
+        x:{grid:{color:'#1f2937'},ticks:{color:'#8a97a8',maxRotation:45,minRotation:30,font:{size:11}}},
+        y:{grid:{color:'#1f2937'},ticks:{color:'#8a97a8',callback:v=>v.toFixed(2)},title:{display:true,text:'probability',color:'#8a97a8'}},
+        y2:{position:'right',min:0,max:1,grid:{drawOnChartArea:false},ticks:{color:'#3a8df0',callback:v=>v.toFixed(1)},title:{display:true,text:'cumulative',color:'#3a8df0'}}
+      }
+    }
+  });
+</script>
+</body>
+</html>
