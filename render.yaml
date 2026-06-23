@@ -1,0 +1,19 @@
+# Render Blueprint — TACA Research Lab static page.
+# Separate static site on the same Render account as alex-finance.
+# Shares the hosting account ONLY; zero shared code with the AXI engine.
+services:
+  - type: web
+    name: taca-research-lab
+    runtime: static
+    buildCommand: "echo no build step"
+    staticPublishPath: ./web
+    pullRequestPreviewsEnabled: false
+    region: frankfurt
+    headers:
+      - path: /*
+        name: X-Frame-Options
+        value: SAMEORIGIN
+    routes:
+      - type: rewrite
+        source: /
+        destination: /index.html
