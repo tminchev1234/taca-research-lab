@@ -8,7 +8,6 @@ services:
     buildCommand: "echo no build step"
     staticPublishPath: ./web
     pullRequestPreviewsEnabled: false
-    region: frankfurt
     headers:
       - path: /*
         name: X-Frame-Options
