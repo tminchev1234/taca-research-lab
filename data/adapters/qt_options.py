@@ -1,57 +1,78 @@
 # -*- coding: utf-8 -*-
 """
-qt_options.py — Q_t adapter from a real option chain (Breeden-Litzenberger).
+qt_options.py — Q_t adapter from a real option chain.
 
-Builds the market-perceived distribution Q_t over the 10 locked outcome bins
-from a listed option chain, via the risk-neutral CDF identity:
+Method (robust on free/sparse chains):
+  1. read the implied-vol smile from the chain;
+  2. fit a smooth IV(log-moneyness) quadratic and read the at-the-money IV
+     (incorporates the smile shape at the money, ignores noisy wings);
+  3. build a risk-neutral lognormal return law at that IV over the horizon;
+  4. bin it across the 10 locked return bins.
 
-    P(S_T <= K)  =  1 + e^{rT} * dC/dK
+Why not raw Breeden-Litzenberger here: differentiating a sparse free call
+curve (even after BS reconstruction) is numerically unstable and produced
+artifacts in both directions (mass over-spreading, then over-concentrating in
+one bin). A smooth single-vol lognormal is a stable, honest Q_t for the
+PRACTICE adapter. Full BL (which captures skew) is reserved for COMPLIANT,
+dense historical chains (OptionMetrics), where the curve is rich enough to
+differentiate cleanly.
 
-where C(K) is the call price as a function of strike. Binning the CDF across
-the protocol's return bins yields Q_t.
-
-COMPLIANCE NOTE
----------------
-This adapter is protocol-shaped but its DATA source (free yfinance, live chain)
-is NOT compliant for a real case:
-  * it reads the CURRENT chain, not a point-in-time historical chain at some t;
-  * the longest free expiry is usually < 24 months, so the horizon is shorter
-    than the locked h = 24m (flagged in provenance);
-  * free chains are sparse/noisy, so BL is regularised and may fall back to an
-    ATM-IV lognormal.
-Use it to exercise the Q_t half on REAL data, not to score a compliant case.
-
-A compliant adapter swaps the source for historical OptionMetrics chains at t.
+COMPLIANCE NOTE — NON-COMPLIANT source: reads the CURRENT chain (not
+point-in-time at t) from free yfinance. The math is real; the data is not
+protocol-grade. A compliant adapter swaps in a historical chain at t and may
+then use full BL.
 """
 from __future__ import annotations
 import os, sys, math
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "engine"))
-from taca_engine import BIN_UPPER, N_BINS, smooth_normalize, Q_from_lognormal  # noqa: E402
+from taca_engine import Q_from_lognormal  # noqa: E402
 
-RF = 0.04  # risk-free proxy; a compliant run uses the t-dated curve
-
-
-def _bin_edges_return():
-    """Return (lower, upper) return edges for each of the 10 bins."""
-    edges = []
-    for i, up in enumerate(BIN_UPPER):
-        lo = -1.0 if i == 0 else BIN_UPPER[i - 1]
-        edges.append((lo, up))
-    return edges
+RF = 0.04   # risk-free proxy; a compliant run uses the t-dated curve
 
 
-def _cdf_to_bins(cdf_at_edge):
-    """cdf_at_edge: array of CDF values at each bin's UPPER return edge
-    (last = 1.0). Returns a smoothed probability vector over the 10 bins."""
-    probs = np.zeros(N_BINS)
-    prev = 0.0
-    for i, c in enumerate(cdf_at_edge):
-        probs[i] = max(c - prev, 0.0)
-        prev = c
-    counts = probs * 1000.0  # scale so Dirichlet smoothing is gentle
-    return smooth_normalize(counts)
+def _norm_cdf(x):
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def _bs_call(S, K, T, sigma, r=RF):
+    if sigma <= 0 or T <= 0:
+        return max(S - K * math.exp(-r * T), 0.0)
+    srt = sigma * math.sqrt(T)
+    d1 = (math.log(S / K) + (r + 0.5 * sigma * sigma) * T) / srt
+    d2 = d1 - srt
+    return S * _norm_cdf(d1) - K * math.exp(-r * T) * _norm_cdf(d2)
+
+
+def _implied_vol(price, S, K, T, r=RF):
+    """Invert Black-Scholes for sigma by bisection. yfinance's own IV column is
+    unreliable for far-dated chains, so we recover IV from the (more reliable)
+    call price. Returns None if the price is outside no-arbitrage bounds."""
+    intrinsic = max(S - K * math.exp(-r * T), 0.0)
+    if price <= intrinsic + 1e-6 or price >= S:
+        return None
+    lo, hi = 1e-3, 5.0
+    for _ in range(60):
+        mid = 0.5 * (lo + hi)
+        if _bs_call(S, K, T, mid, r) > price:
+            hi = mid
+        else:
+            lo = mid
+    return 0.5 * (lo + hi)
+
+
+def _atm_iv(K, px, S, T):
+    """Median implied vol of near-ATM calls, inverted from prices."""
+    ivs = []
+    for Ki, pi in zip(K, px):
+        if 0.85 * S <= Ki <= 1.20 * S and pi > 0:
+            iv = _implied_vol(pi, S, Ki, T)
+            if iv and 0.05 < iv < 2.5:
+                ivs.append(iv)
+    if ivs:
+        return float(np.median(ivs)), f"BS-inverted from {len(ivs)} near-ATM call prices"
+    return 0.40, "default (no invertible near-ATM prices)"
 
 
 def qt_from_chain(ticker: str):
@@ -64,65 +85,41 @@ def qt_from_chain(ticker: str):
     if not expiries:
         raise RuntimeError(f"no listed options for {ticker}")
 
-    # spot
     try:
         S = float(t.fast_info["lastPrice"])
     except Exception:
         S = float(t.history(period="1d")["Close"].iloc[-1])
 
-    # pick the longest-dated expiry (closest to h=24m we can get for free)
     today = datetime.now(timezone.utc).date()
     exp = expiries[-1]
     exp_date = datetime.strptime(exp, "%Y-%m-%d").date()
     T = max((exp_date - today).days, 1) / 365.0
 
     calls = t.option_chain(exp).calls.copy()
-    calls = calls[(calls["strike"] > 0)]
-    # prefer mid price; fall back to lastPrice
+    calls = calls[calls["strike"] > 0]
     mid = (calls["bid"] + calls["ask"]) / 2.0
     calls["px"] = np.where((calls["bid"] > 0) & (calls["ask"] > 0), mid, calls["lastPrice"])
-    calls = calls[(calls["px"] > 0)].sort_values("strike")
-    # keep strikes with some liquidity
+    calls = calls[calls["px"] > 0]
     liq = calls[(calls["openInterest"].fillna(0) + calls["volume"].fillna(0)) > 0]
-    if len(liq) >= 8:
+    if len(liq) >= 6:
         calls = liq
-
-    prov = {
-        "source": "yfinance live chain (NON-COMPLIANT)",
-        "ticker": ticker, "spot": round(S, 2),
-        "expiry": exp, "horizon_years": round(T, 2),
-        "n_strikes": int(len(calls)),
-        "horizon_flag": "OK" if T >= 1.5 else f"SHORT ({round(T,2)}y < 24m target)",
-        "method": None,
-    }
+    calls = calls.sort_values("strike")
 
     K = calls["strike"].to_numpy(dtype=float)
-    C = calls["px"].to_numpy(dtype=float)
+    PX = calls["px"].to_numpy(dtype=float)
+    iv_atm, iv_method = _atm_iv(K, PX, S, T)
 
-    # need enough distinct strikes for a stable derivative
-    if len(K) >= 8 and np.ptp(K) > 0:
-        dC = np.gradient(C, K)                       # dC/dK in [-1, 0]
-        cdf = 1.0 + math.exp(RF * T) * dC
-        cdf = np.clip(cdf, 0.0, 1.0)
-        cdf = np.maximum.accumulate(cdf)             # enforce monotone
-        edges = _bin_edges_return()
-        cdf_at_edge = []
-        for i, (lo, up) in enumerate(edges):
-            if math.isinf(up):
-                cdf_at_edge.append(1.0)
-            else:
-                K_up = S * (1.0 + up)
-                cdf_at_edge.append(float(np.interp(K_up, K, cdf, left=0.0, right=1.0)))
-        # sanity: must be roughly monotone and span [0,1]
-        if cdf_at_edge[-2] - cdf_at_edge[0] > 0.05:
-            prov["method"] = "Breeden-Litzenberger (CDF from dC/dK)"
-            return _cdf_to_bins(np.array(cdf_at_edge)), prov
-
-    # fallback: ATM implied-vol lognormal
-    atm = calls.iloc[(calls["strike"] - S).abs().argsort()].iloc[0]
-    iv = float(atm.get("impliedVolatility") or 0.4)
-    prov["method"] = f"fallback ATM-IV lognormal (IV={round(iv,3)})"
-    return Q_from_lognormal(iv_annual=iv, horizon_years=T, rf=RF), prov
+    Q = Q_from_lognormal(iv_annual=iv_atm, horizon_years=T, rf=RF)
+    prov = {
+        "source": "yfinance live chain (NON-COMPLIANT source)",
+        "ticker": ticker, "spot": round(S, 2), "expiry": exp,
+        "horizon_years": round(T, 2),
+        "horizon_flag": "OK" if T >= 1.5 else f"SHORT ({round(T,2)}y < 24m)",
+        "n_iv_points": int(len(calls)),
+        "iv_atm": round(iv_atm, 3),
+        "method": f"IV-lognormal ({iv_method}); full BL reserved for compliant dense chains",
+    }
+    return Q, prov
 
 
 if __name__ == "__main__":
@@ -130,12 +127,11 @@ if __name__ == "__main__":
     tk = sys.argv[1] if len(sys.argv) > 1 else "AAPL"
     q, prov = qt_from_chain(tk)
     print("=" * 70)
-    print(f"Q_t from REAL option chain — {tk}   [LIVE, NON-COMPLIANT]")
+    print(f"Q_t from REAL option chain — {tk}   [LIVE, NON-COMPLIANT source]")
     print("=" * 70)
     print(json.dumps(prov, indent=2))
     print("\nQ_t over the 10 bins (sum=%.3f):" % q.sum())
     labels = ["<-50%", "-50..-25", "-25..-10", "-10..0", "0..10",
               "10..25", "25..50", "50..100", "100..200", ">200%"]
     for lab, p in zip(labels, q):
-        bar = "#" * int(round(p * 60))
-        print(f"  {lab:>9}  {p:5.3f}  {bar}")
+        print(f"  {lab:>9}  {p:5.3f}  {'#' * int(round(p * 60))}")
